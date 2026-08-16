@@ -1,0 +1,91 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "STATISTICALC_BUILD_TESTS": "ON",
+        "STATISTICALC_BUILD_EXAMPLES": "ON"
+      }
+    },
+    {
+      "name": "linux",
+      "displayName": "Linux (default compiler)",
+      "inherits": "base",
+      "generator": "Ninja",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "linux-clang",
+      "displayName": "Linux (clang)",
+      "inherits": "linux",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    },
+    {
+      "name": "macos",
+      "displayName": "macOS (AppleClang)",
+      "inherits": "base",
+      "generator": "Ninja",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      }
+    },
+    {
+      "name": "windows",
+      "displayName": "Windows (Visual Studio 2022, x64)",
+      "inherits": "base",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "debug-sanitized",
+      "displayName": "Linux debug with address and UB sanitizers",
+      "inherits": "linux",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "linux", "configurePreset": "linux" },
+    { "name": "linux-clang", "configurePreset": "linux-clang" },
+    { "name": "macos", "configurePreset": "macos" },
+    { "name": "windows", "configurePreset": "windows", "configuration": "Release" },
+    { "name": "debug-sanitized", "configurePreset": "debug-sanitized" }
+  ],
+  "testPresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    { "name": "linux", "inherits": "base", "configurePreset": "linux" },
+    { "name": "linux-clang", "inherits": "base", "configurePreset": "linux-clang" },
+    { "name": "macos", "inherits": "base", "configurePreset": "macos" },
+    { "name": "windows", "inherits": "base", "configurePreset": "windows", "configuration": "Release" },
+    { "name": "debug-sanitized", "inherits": "base", "configurePreset": "debug-sanitized" }
+  ]
+}

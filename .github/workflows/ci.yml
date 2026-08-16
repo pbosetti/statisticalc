@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux / GCC
+            os: ubuntu-latest
+            cxx: g++
+          - name: Linux / Clang
+            os: ubuntu-latest
+            cxx: clang++
+          - name: macOS / AppleClang
+            os: macos-latest
+            cxx: clang++
+          - name: Windows / MSVC
+            os: windows-latest
+            cxx: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        env:
+          CXX: ${{ matrix.cxx }}
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+      - name: Run the example
+        run: cmake --build build --config Release --target statisticalc_example
+
+  sanitizers:
+    name: Linux / Clang + ASan + UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        env:
+          CXX: clang++
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  install-and-consume:
+    name: Install and consume with find_package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the headers
+        run: |
+          cmake -S . -B build -DSTATISTICALC_BUILD_TESTS=OFF \
+                -DSTATISTICALC_BUILD_EXAMPLES=OFF \
+                -DCMAKE_INSTALL_PREFIX="$PWD/staging"
+          cmake --build build --target install
+
+      - name: Build a downstream project against it
+        run: |
+          mkdir -p consumer
+          cat > consumer/CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.16)
+          project(consumer LANGUAGES CXX)
+          find_package(statisticalc REQUIRED)
+          add_executable(consumer main.cpp)
+          target_link_libraries(consumer PRIVATE statisticalc::statisticalc)
+          EOF
+          cat > consumer/main.cpp <<'EOF'
+          #include <statisticalc/statisticalc.hpp>
+          #include <cstdio>
+          int main() {
+            statisticalc::RunningStats<double> s(10);
+            s << 1.0 << 2.0 << 3.0 << 4.0;
+            std::printf("mean=%g p=%g\n", s.mean(), s.t_test(0.0).p_value);
+            return (s.mean() == 2.5) ? 0 : 1;
+          }
+          EOF
+          cmake -S consumer -B consumer/build -DCMAKE_PREFIX_PATH="$PWD/staging"
+          cmake --build consumer/build
+          ./consumer/build/consumer
