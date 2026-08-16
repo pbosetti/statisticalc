@@ -510,8 +510,11 @@ class RunningStats {
     const size_type cap = _capacity;
     clear();
     _capacity = cap;
+    // The extrema deques index the values by their ordinal among all the values
+    // ever pushed, and eviction relies on it: replay the window with the very
+    // ordinals it had, so that the running count comes out unchanged.
+    _total = total - static_cast<std::uint64_t>(v.size());
     for (T x : v) push(x);
-    _total = total;
   }
 
   // -- window state ---------------------------------------------------------

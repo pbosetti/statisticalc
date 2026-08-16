@@ -138,6 +138,23 @@ TEST_CASE("clear and refresh", "[window]") {
   CHECK_THAT(s.variance(), WithinRel(before, 1e-12));
   CHECK_THAT(s.variance(), WithinRel(ref::a_var, ref::tol));
   CHECK(s.total_count() == 10);
+
+  SECTION("the window keeps sliding correctly after a refresh") {
+    RunningStats<double> r(4);
+    std::vector<double> window;
+    for (int i = 0; i < 40; ++i) {
+      const double x = std::sin(0.7 * i) * 10.0;  // no monotonic trend
+      r.push(x);
+      window.push_back(x);
+      if (window.size() > 4) window.erase(window.begin());
+      if (i % 5 == 0) r.refresh();  // must not disturb the eviction bookkeeping
+      REQUIRE(r.size() == window.size());
+      REQUIRE(r.min() == *std::min_element(window.begin(), window.end()));
+      REQUIRE(r.max() == *std::max_element(window.begin(), window.end()));
+      REQUIRE_THAT(r.mean(), WithinRel(naive_mean(window), 1e-12));
+    }
+    CHECK(r.total_count() == 40);
+  }
 }
 
 TEST_CASE("resizing the window", "[window]") {
