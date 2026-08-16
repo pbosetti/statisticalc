@@ -63,7 +63,9 @@ TEST_CASE("merging two samples", "[usability]") {
   CHECK_THAT(m.kurtosis(), WithinRel(direct.kurtosis(), 1e-10));
   CHECK(m.min() == direct.min());
   CHECK(m.max() == direct.max());
-  CHECK(!m.bounded());  // the merged result keeps moments, not values
+  CHECK(!m.bounded());  // the merged window is an unlimited one
+  CHECK(m.values() == all);
+  CHECK_THAT(m.median(), WithinRel(direct.median(), 1e-15));
 
   SECTION("operator+ is the same thing") {
     const auto p = a + b;

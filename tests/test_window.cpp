@@ -175,39 +175,112 @@ TEST_CASE("resizing the window", "[window]") {
     CHECK(s.newest() == 9.0);
     CHECK(s.oldest() == ref::a.front());
   }
-  SECTION("switching to unlimited keeps the moments but not the values") {
+  SECTION("switching to unlimited keeps everything") {
     const double m = s.mean();
     s.resize(RunningStats<double>::unlimited);
     CHECK(!s.bounded());
     CHECK_THAT(s.mean(), WithinRel(m, 1e-15));
     CHECK(s.min() == 1.9);
-    CHECK_THROWS_AS(s.values(), std::logic_error);
+    CHECK(s.values() == ref::a);
+    CHECK_THAT(s.median(), WithinRel(ref::a_median, ref::tol));
+  }
+  SECTION("switching back to bounded keeps the most recent values") {
+    s.resize(RunningStats<double>::unlimited);
+    s.push(7.7);
+    s.resize(3);
+    CHECK(s.bounded());
+    CHECK(s.full());
+    CHECK(s.values() == std::vector<double>{4.4, 2.2, 7.7});
+    CHECK(s.max() == 7.7);
+    CHECK_THAT(s.mean(), WithinRel(naive_mean({4.4, 2.2, 7.7}), 1e-13));
+    s.push(0.5);  // and it evicts from there on
+    CHECK(s.values() == std::vector<double>{2.2, 7.7, 0.5});
+    CHECK(s.min() == 0.5);
   }
 }
 
-TEST_CASE("unlimited accumulator", "[window]") {
+TEST_CASE("unlimited window", "[window]") {
   RunningStats<double> s;
   CHECK(!s.bounded());
   CHECK(s.capacity() == RunningStats<double>::unlimited);
-  CHECK(!s.full());
+  CHECK(!s.full());  // it never fills up
 
   for (int i = 1; i <= 1000; ++i) s.push(static_cast<double>(i));
   CHECK(s.size() == 1000);
+  CHECK(s.total_count() == 1000);
   CHECK_THAT(s.mean(), WithinRel(500.5, 1e-13));
   CHECK_THAT(s.variance(), WithinRel(1000.0 * 1001.0 / 12.0, 1e-11));
   CHECK(s.min() == 1.0);
   CHECK(s.max() == 1000.0);
+  CHECK(!s.full());
 
-  SECTION("value based queries are rejected") {
-    CHECK_THROWS_AS(s.values(), std::logic_error);
-    CHECK_THROWS_AS(s.median(), std::logic_error);
-    CHECK_THROWS_AS(s.at(0), std::logic_error);
-    CHECK_THROWS_AS(s.pop(), std::logic_error);
+  SECTION("it retains its values, like any other window") {
+    CHECK(s.values().size() == 1000);
+    CHECK(s.at(0) == 1.0);
+    CHECK(s[499] == 500.0);
+    CHECK(s.oldest() == 1.0);
+    CHECK(s.newest() == 1000.0);
+    CHECK_THAT(s.median(), WithinRel(500.5, 1e-13));
+    CHECK_THAT(s.quantile(0.25), WithinRel(250.75, 1e-13));
+    CHECK_THAT(s.iqr(), WithinRel(499.5, 1e-12));
   }
-  SECTION("it cannot be turned into a bounded window") {
-    CHECK_THROWS_AS(s.resize(10), std::logic_error);
-    s.clear();
-    CHECK_NOTHROW(s.resize(10));
+  SECTION("popping the oldest value works too") {
+    for (int i = 0; i < 400; ++i) s.pop();
+    CHECK(s.size() == 600);
+    CHECK(s.total_count() == 1000);  // pushes are still all accounted for
+    CHECK(s.oldest() == 401.0);
+    CHECK(s.newest() == 1000.0);
+    CHECK(s.min() == 401.0);
+    CHECK(s.max() == 1000.0);
+    CHECK_THAT(s.mean(), WithinRel(700.5, 1e-12));
+    CHECK(s.values().front() == 401.0);
+
+    // Emptying it entirely and refilling it must leave no trace behind.
+    while (!s.empty()) s.pop();
+    CHECK(s.empty());
+    s.push({3.0, 1.0, 2.0});
+    CHECK(s.values() == std::vector<double>{3.0, 1.0, 2.0});
+    CHECK(s.min() == 1.0);
+    CHECK(s.max() == 3.0);
+  }
+  SECTION("it can be turned into a bounded window, keeping the last values") {
+    s.resize(4);
     CHECK(s.bounded());
+    CHECK(s.full());
+    CHECK(s.values() == std::vector<double>{997.0, 998.0, 999.0, 1000.0});
+    CHECK(s.min() == 997.0);
+    CHECK_THAT(s.mean(), WithinRel(998.5, 1e-13));
+    s.push(0.0);
+    CHECK(s.values() == std::vector<double>{998.0, 999.0, 1000.0, 0.0});
+    CHECK(s.min() == 0.0);
   }
+  SECTION("refresh works on it as well") {
+    s.refresh();
+    CHECK(s.size() == 1000);
+    CHECK(s.total_count() == 1000);
+    CHECK_THAT(s.mean(), WithinRel(500.5, 1e-13));
+    CHECK(s.min() == 1.0);
+    CHECK(s.max() == 1000.0);
+  }
+}
+
+TEST_CASE("an unlimited window agrees with a bounded one that never fills",
+          "[window]") {
+  std::mt19937 rng(99);
+  std::normal_distribution<double> dis(0.0, 1.0);
+  RunningStats<double> unbounded;
+  RunningStats<double> roomy(500);  // never reaches its capacity
+
+  for (int i = 0; i < 300; ++i) {
+    const double x = dis(rng);
+    unbounded.push(x);
+    roomy.push(x);
+    REQUIRE(unbounded.size() == roomy.size());
+    REQUIRE(unbounded.min() == roomy.min());
+    REQUIRE(unbounded.max() == roomy.max());
+    REQUIRE_THAT(unbounded.mean(), WithinRel(roomy.mean(), 1e-15));
+  }
+  CHECK(unbounded.values() == roomy.values());
+  CHECK_THAT(unbounded.median(), WithinRel(roomy.median(), 1e-15));
+  CHECK_THAT(unbounded.kurtosis(), WithinRel(roomy.kurtosis(), 1e-12));
 }

@@ -1,12 +1,13 @@
 # statisticalc
 
-Header-only C++20 running statistics: a rolling (or unlimited) window of
-observations with **descriptive** statistics maintained by recursion formulas
+Header-only C++20 running statistics: a rolling (optionally unlimited) window
+of observations with **descriptive** statistics maintained by recursion formulas
 and **inferential** statistics (t-test, variance test, and their two-sample
 counterparts) computed on top of them.
 
 * header only, no dependency but the standard library;
-* the window holds the last *N* values, or every value if unbounded;
+* the window holds the last *N* values; an unlimited one differs only in that
+  it never evicts, so it keeps every value and supports the same operations;
 * mean, variance, skewness and kurtosis are updated in **O(1)** per sample, on
   insertion *and* on eviction (Welford / Pébay recursions, both directions);
 * min and max of the sliding window in O(1) amortised (monotonic deques);
@@ -25,14 +26,14 @@ counterparts) computed on top of them.
 using statisticalc::RunningStats;
 
 RunningStats<double> window(50);   // last 50 observations
-RunningStats<double> lifetime;     // unlimited, O(1) memory
+RunningStats<double> lifetime;     // unlimited: never evicts anything
 
 window << 10.2 << 9.8 << 10.1;     // stream values in
 window.push(some_vector);          // or push any range
 
 double m  = window.mean();
 double sd = window.stddev();
-double q  = window.median();       // order statistics need a bounded window
+double q  = window.median();       // order statistics, from the stored values
 
 // H0: the process is centred on 10.0
 auto r = window.t_test(10.0);
@@ -100,14 +101,20 @@ chosen explicitly, e.g. `RunningStats<float, float>` for embedded targets.
 
 | member | meaning |
 | --- | --- |
-| `RunningStats()` | unlimited accumulator, values are not retained |
+| `RunningStats()` | unlimited window: it grows and never evicts |
 | `RunningStats(n)` | rolling window of at most `n` values |
 | `RunningStats(n, range)` | as above, pre-filled from a range |
 | `push(x)`, `push(range)`, `push({...})`, `operator()(x)` | add observations |
-| `pop()` | drop the oldest observation (bounded windows) |
+| `pop()` | drop the oldest observation |
 | `clear()`, `resize(n)`, `refresh()` | reset, change the window, recompute the moments |
 | `size()`, `capacity()`, `empty()`, `full()`, `bounded()`, `total_count()` | state |
 | `at(i)`, `operator[]`, `oldest()`, `newest()`, `values()` | access the stored values |
+
+A bounded window is a ring buffer of `capacity()` values; an unlimited one is
+the same window backed by an array that grows instead of wrapping around, so it
+costs one slot per observation. Everything else is identical — including
+`pop()`, the order statistics, and `resize()`, which moves between the two in
+either direction and always keeps the most recent values.
 
 `refresh()` recomputes the moments from the stored values: the incremental
 formulas are numerically sound but, over hundreds of millions of updates,
@@ -118,8 +125,7 @@ round-off does accumulate, and a periodic `refresh()` clears it.
 `mean()`, `sum()`, `variance()`, `population_variance()`, `stddev()`,
 `population_stddev()`, `sem()`, `cv()`, `rms()`, `sum_of_squares()`,
 `skewness()`, `population_skewness()`, `kurtosis()` (excess),
-`population_kurtosis()`, `min()`, `max()`, `range()`, `zscore(x)`,
-and — on bounded windows, since they need the values — `median()`,
+`population_kurtosis()`, `min()`, `max()`, `range()`, `zscore(x)`, `median()`,
 `quantile(p)` (type 7, as in R and NumPy) and `iqr()`.
 
 `variance()`, `skewness()` and `kurtosis()` are the usual bias-corrected sample
@@ -172,9 +178,9 @@ auto c = a + b;                  // or merge(a, b): pairwise combination of the 
 swap(a, b);
 ```
 
-`merge()` combines the moments of two samples with the Chan-Golub-LeVeque
-formulas; the result is an unlimited accumulator (the individual values are not
-carried over).
+`merge()` concatenates the two windows into an unlimited one and obtains its
+moments in closed form from the two sets of accumulators (Chan-Golub-LeVeque),
+without a second pass over the data.
 
 ### Distributions
 

@@ -15,7 +15,7 @@ int main() {
   // ---------------------------------------------------------------------
   std::normal_distribution<double> process(10.0, 0.2);
   RunningStats<double> window(50);  // last 50 samples
-  RunningStats<double> lifetime;    // unlimited, O(1) memory
+  RunningStats<double> lifetime;    // unlimited: keeps every sample
 
   for (int i = 0; i < 500; ++i) {
     const double x = process(rng);
@@ -26,6 +26,7 @@ int main() {
   std::cout << "rolling  " << window << '\n'
             << "lifetime " << lifetime << '\n'
             << "  median      = " << window.median() << '\n'
+            << "  lifetime med= " << lifetime.median() << '\n'
             << "  IQR         = " << window.iqr() << '\n'
             << "  skewness    = " << window.skewness() << '\n'
             << "  kurtosis    = " << window.kurtosis() << '\n'

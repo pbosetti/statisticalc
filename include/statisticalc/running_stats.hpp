@@ -1,9 +1,11 @@
 // statisticalc - header-only running statistics for C++20
 //
-// RunningStats<T> keeps a running window of the last N observations (or an
-// unlimited one) and maintains the first four central moments incrementally,
-// with Welford-style recursion formulas for both insertion and removal, so that
-// every descriptive statistic is available in O(1) at any time.
+// RunningStats<T> keeps a running window of the last N observations and
+// maintains the first four central moments incrementally, with Welford-style
+// recursion formulas for both insertion and removal, so that every descriptive
+// statistic is available in O(1) at any time. An unlimited window differs only
+// in that it never evicts anything: it is the same window, backed by an array
+// that grows instead of wrapping around, and it offers the same operations.
 //
 // On top of the descriptive layer it offers inferential statistics:
 //   * one-sample Student t-test on the mean, and its confidence interval;
@@ -377,7 +379,9 @@ using default_accumulator_t =
     std::conditional_t<std::is_same_v<T, long double>, long double, double>;
 
 /// Running window of values with incremental descriptive and inferential
-/// statistics.
+/// statistics. The window holds the last `capacity()` values; an `unlimited`
+/// one holds them all, growing as needed, and every operation behaves the same
+/// on both kinds.
 ///
 /// @tparam T value type of the observations (any arithmetic type).
 /// @tparam A floating point type used for the accumulators.
@@ -394,7 +398,7 @@ class RunningStats {
 
   // -- construction ---------------------------------------------------------
 
-  /// Unlimited accumulator: no window, values are not retained.
+  /// Unlimited window: it grows with every value and never evicts.
   RunningStats() noexcept = default;
 
   /// Window of at most `window` values; `unlimited` (0) for no bound.
@@ -413,8 +417,12 @@ class RunningStats {
 
   /// Add one observation, evicting the oldest one if the window is full.
   void push(T x) {
-    if (bounded() && _n == _capacity) pop();
-    if (bounded()) _buf[(_head + _n) % _capacity] = x;
+    if (bounded()) {
+      if (_n == _capacity) pop();
+      _buf[(_head + _n) % _capacity] = x;
+    } else {
+      _buf.push_back(x);  // an unlimited window simply keeps growing
+    }
     ++_n;
     add_moment(static_cast<A>(x));
     update_extrema(x);
@@ -435,21 +443,29 @@ class RunningStats {
   /// Callable form, handy with std::for_each and friends.
   void operator()(T x) { push(x); }
 
-  /// Drop the oldest observation. Only meaningful on a bounded window, since an
-  /// unlimited accumulator does not retain the values.
+  /// Drop the oldest observation, on a bounded and on an unlimited window
+  /// alike. This is what the window does by itself when a bounded one
+  /// overflows; an unlimited one simply never gets there on its own.
   void pop() {
     if (_n == 0) return;
-    if (!bounded())
-      throw std::logic_error(
-          "statisticalc: cannot pop from an unlimited accumulator, values are "
-          "not retained");
     const T x = _buf[_head];
     remove_moment(static_cast<A>(x));
     const std::uint64_t oldest = _total - _n;
     if (!_min_q.empty() && _min_q.front().first == oldest) _min_q.pop_front();
     if (!_max_q.empty() && _max_q.front().first == oldest) _max_q.pop_front();
-    _head = (_head + 1) % _capacity;
     --_n;
+    if (bounded()) {
+      _head = (_head + 1) % _capacity;
+    } else {
+      // Advancing the head keeps pop() O(1); reclaim the dead prefix once it
+      // reaches half the storage, which amortises to O(1) per value.
+      ++_head;
+      if (_head >= _buf.size() - _head) {
+        _buf.erase(_buf.begin(),
+                   _buf.begin() + static_cast<std::ptrdiff_t>(_head));
+        _head = 0;
+      }
+    }
   }
 
   /// Forget every observation, keeping the current window size.
@@ -457,54 +473,34 @@ class RunningStats {
     _n = _head = 0;
     _total = 0;
     _mean = _m2 = _m3 = _m4 = A(0);
-    _min = _max = T{};
+    if (!bounded()) _buf.clear();
     _min_q.clear();
     _max_q.clear();
   }
 
-  /// Change the window size.
-  /// Growing or shrinking a bounded window keeps the most recent values
-  /// (the excess oldest ones are evicted); switching a bounded window to
-  /// `unlimited` keeps the current moments but stops retaining values.
-  /// Turning a non-empty unlimited accumulator into a bounded window is not
-  /// possible, because its past values are gone: it throws std::logic_error.
+  /// Change the window size, in either direction and between either kind of
+  /// window. The most recent values are always the ones kept: shrinking below
+  /// the current size evicts the oldest ones, exactly as pushing would.
   void resize(size_type window) {
     if (window == _capacity) return;
-    if (window == unlimited) {
-      if (_n > 0) {
-        _min = min();
-        _max = max();
-      }
-      _buf.clear();
-      _buf.shrink_to_fit();
-      _min_q.clear();
-      _max_q.clear();
-      _head = 0;
-      _capacity = unlimited;
-      return;
-    }
-    if (!bounded()) {
-      if (_n != 0)
-        throw std::logic_error(
-            "statisticalc: cannot turn a non-empty unlimited accumulator into "
-            "a bounded window, past values are not retained");
-      _capacity = window;
-      _buf.assign(_capacity, T{});
-      return;
-    }
-    while (_n > window) pop();
+    while (window != unlimited && _n > window) pop();
+    // Relaying the values out does not change which values are in the window,
+    // so the extrema deques, which index them by ordinal, stay valid.
     std::vector<T> kept = values();
-    _buf.assign(window, T{});
-    for (size_type i = 0; i < kept.size(); ++i) _buf[i] = kept[i];
+    if (window == unlimited) {
+      _buf = std::move(kept);
+    } else {
+      _buf.assign(window, T{});
+      for (size_type i = 0; i < kept.size(); ++i) _buf[i] = kept[i];
+    }
     _head = 0;
     _capacity = window;
   }
 
   /// Recompute the moments from the stored values. The incremental formulas
-  /// accumulate round-off over very long runs; on a bounded window this
-  /// restores full accuracy. No-op on an unlimited accumulator.
+  /// accumulate round-off over very long runs; this restores full accuracy.
   void refresh() {
-    if (!bounded() || _n == 0) return;
+    if (_n == 0) return;
     const std::vector<T> v = values();
     const std::uint64_t total = _total;
     const size_type cap = _capacity;
@@ -531,9 +527,8 @@ class RunningStats {
 
   /// i-th value of the window, from the oldest (0) to the newest (size() - 1).
   [[nodiscard]] T at(size_type i) const {
-    require_values("at()");
     if (i >= _n) throw std::out_of_range("statisticalc: index out of range");
-    return _buf[(_head + i) % _capacity];
+    return _buf[slot(i)];
   }
   [[nodiscard]] T operator[](size_type i) const { return at(i); }
   [[nodiscard]] T oldest() const { return at(0); }
@@ -541,11 +536,9 @@ class RunningStats {
 
   /// Copy of the window, from the oldest to the newest value.
   [[nodiscard]] std::vector<T> values() const {
-    require_values("values()");
     std::vector<T> out;
     out.reserve(_n);
-    for (size_type i = 0; i < _n; ++i)
-      out.push_back(_buf[(_head + i) % _capacity]);
+    for (size_type i = 0; i < _n; ++i) out.push_back(_buf[slot(i)]);
     return out;
   }
 
@@ -608,18 +601,17 @@ class RunningStats {
 
   [[nodiscard]] T min() const {
     if (_n == 0) throw std::logic_error("statisticalc: min() on empty window");
-    return bounded() ? _min_q.front().second : _min;
+    return _min_q.front().second;
   }
   [[nodiscard]] T max() const {
     if (_n == 0) throw std::logic_error("statisticalc: max() on empty window");
-    return bounded() ? _max_q.front().second : _max;
+    return _max_q.front().second;
   }
   [[nodiscard]] T range() const { return static_cast<T>(max() - min()); }
 
   /// Quantile of type 7 (the default of R and numpy), by linear interpolation
-  /// on a sorted copy of the window. Bounded windows only.
+  /// on a sorted copy of the window.
   [[nodiscard]] A quantile(double p) const {
-    require_values("quantile()");
     if (_n == 0)
       throw std::logic_error("statisticalc: quantile() on empty window");
     if (!(p >= 0.0 && p <= 1.0))
@@ -719,8 +711,10 @@ class RunningStats {
     return os;
   }
 
-  /// Merge two samples into a single unlimited accumulator: the moments are
-  /// combined pairwise (Chan-Golub-LeVeque), the values are not retained.
+  /// Merge two samples into a single unlimited window: the values of `a` are
+  /// followed by those of `b`, and the moments are obtained in closed form from
+  /// the two sets of accumulators (Chan-Golub-LeVeque) rather than by a second
+  /// pass over the data.
   friend RunningStats merge(const RunningStats &a, const RunningStats &b) {
     if (a._n == 0) return unlimited_copy(b);
     if (b._n == 0) return unlimited_copy(a);
@@ -732,6 +726,10 @@ class RunningStats {
     const A d2 = d * d;
     out._n = a._n + b._n;
     out._total = a._total + b._total;
+    out._buf = a.values();
+    const std::vector<T> tail = b.values();
+    out._buf.insert(out._buf.end(), tail.begin(), tail.end());
+    out.rebuild_extrema();
     out._mean = a._mean + d * nb / n;
     out._m2 = a._m2 + b._m2 + d2 * na * nb / n;
     out._m3 = a._m3 + b._m3 + d2 * d * na * nb * (na - nb) / (n * n) +
@@ -740,8 +738,6 @@ class RunningStats {
               d2 * d2 * na * nb * (na * na - na * nb + nb * nb) / (n * n * n) +
               A(6) * d2 * (na * na * b._m2 + nb * nb * a._m2) / (n * n) +
               A(4) * d * (na * b._m3 - nb * a._m3) / n;
-    out._min = (std::min)(a.min(), b.min());
-    out._max = (std::max)(a.max(), b.max());
     return out;
   }
   /// Merge operator, see merge().
@@ -762,8 +758,6 @@ class RunningStats {
     swap(a._m4, b._m4);
     swap(a._min_q, b._min_q);
     swap(a._max_q, b._max_q);
-    swap(a._min, b._min);
-    swap(a._max, b._max);
   }
 
   // -- friends: two sample tests -------------------------------------------
@@ -808,6 +802,7 @@ class RunningStats {
     return std::numeric_limits<A>::quiet_NaN();
   }
 
+  /// Same sample, same moments, same values, but on an unlimited window.
   static RunningStats unlimited_copy(const RunningStats &s) {
     RunningStats out;
     out._n = s._n;
@@ -816,18 +811,32 @@ class RunningStats {
     out._m2 = s._m2;
     out._m3 = s._m3;
     out._m4 = s._m4;
-    if (s._n > 0) {
-      out._min = s.min();
-      out._max = s.max();
-    }
+    out._buf = s.values();
+    out.rebuild_extrema();
     return out;
   }
 
-  void require_values(const char *what) const {
-    if (!bounded())
-      throw std::logic_error(std::string("statisticalc: ") + what +
-                             " requires a bounded window, an unlimited "
-                             "accumulator does not retain the values");
+  /// Position of the i-th oldest value inside _buf. A bounded window wraps
+  /// around a ring buffer of fixed size, an unlimited one grows linearly.
+  [[nodiscard]] size_type slot(size_type i) const noexcept {
+    return bounded() ? (_head + i) % _capacity : _head + i;
+  }
+
+  /// Rebuild the monotonic deques from _buf, for the cases where the values are
+  /// installed wholesale rather than pushed one by one. The value at window
+  /// position i carries the ordinal _total - _n + i, which is the invariant the
+  /// eviction in pop() relies on.
+  void rebuild_extrema() {
+    _min_q.clear();
+    _max_q.clear();
+    const std::uint64_t first = _total - _n;
+    for (size_type i = 0; i < _n; ++i) {
+      const T x = _buf[slot(i)];
+      while (!_min_q.empty() && !(_min_q.back().second < x)) _min_q.pop_back();
+      _min_q.emplace_back(first + i, x);
+      while (!_max_q.empty() && !(_max_q.back().second > x)) _max_q.pop_back();
+      _max_q.emplace_back(first + i, x);
+    }
   }
 
   /// Welford recursion, extended to the third and fourth central moments
@@ -869,18 +878,8 @@ class RunningStats {
     _m4 = m4;
   }
 
-  /// Monotonic deques give the extrema of a sliding window in O(1) amortised;
-  /// an unlimited accumulator only needs two scalars.
+  /// Monotonic deques give the extrema of a sliding window in O(1) amortised.
   void update_extrema(T x) {
-    if (!bounded()) {
-      if (_n == 1) {
-        _min = _max = x;
-      } else {
-        if (x < _min) _min = x;
-        if (x > _max) _max = x;
-      }
-      return;
-    }
     while (!_min_q.empty() && !(_min_q.back().second < x)) _min_q.pop_back();
     _min_q.emplace_back(_total, x);
     while (!_max_q.empty() && !(_max_q.back().second > x)) _max_q.pop_back();
@@ -888,7 +887,9 @@ class RunningStats {
   }
 
   size_type _capacity = unlimited;
-  std::vector<T> _buf{};     ///< ring buffer, bounded windows only
+  /// The values themselves: a fixed size ring buffer when the window is
+  /// bounded, a plain growing array when it is not.
+  std::vector<T> _buf{};
   size_type _head = 0;       ///< position of the oldest value in _buf
   size_type _n = 0;          ///< values currently in the window
   std::uint64_t _total = 0;  ///< values ever pushed
@@ -898,10 +899,9 @@ class RunningStats {
   A _m3 = A(0);    ///< third central moment accumulator
   A _m4 = A(0);    ///< fourth central moment accumulator
 
-  std::deque<std::pair<std::uint64_t, T>> _min_q{};  ///< bounded windows
+  /// Monotonic deques of (ordinal, value) holding the running min and max.
+  std::deque<std::pair<std::uint64_t, T>> _min_q{};
   std::deque<std::pair<std::uint64_t, T>> _max_q{};
-  T _min = T{};  ///< unlimited accumulator
-  T _max = T{};
 };
 
 using RunningStatsd = RunningStats<double>;
