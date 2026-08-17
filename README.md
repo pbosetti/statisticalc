@@ -1,5 +1,12 @@
 # statisticalc
 
+[![CI](https://github.com/pbosetti/statisticalc/actions/workflows/ci.yml/badge.svg)](https://github.com/pbosetti/statisticalc/actions/workflows/ci.yml/badge.svg) 
+![GitHub License](https://img.shields.io/github/license/pbosetti/statisticalc) 
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
+
+
+
+
 Header-only C++20 running statistics: a rolling (optionally unlimited) window
 of observations with **descriptive** statistics maintained by recursion formulas
 and **inferential** statistics (t-test, variance test, and their two-sample
